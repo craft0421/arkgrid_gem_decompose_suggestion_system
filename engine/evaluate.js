@@ -17,7 +17,7 @@ export const DEFAULT_SETTINGS = {
   orderShare: 0.5,          // 미래 젬 중 질서 비율 (나머지 혼돈)
   gradeDist: { 영웅: 1 },   // 미래 젬 가공 등급 분포
   utilityA: 0.3,            // 가공 정책 목표값 u의 효율·포인트 가중치 (processing.makeUtility)
-  useThreshold: 0.01,       // P_use 이 값 미만이면 '분해 권장'
+  useThreshold: 0.03,       // 쓰일 확률의 95% 상한(보수적 값)이 이 값 미만이면 '분해 권장' (100회 중 0번, 200회 중 1번 이하, 400회 중 5번 이하)
   dominanceMode: 'scalar',  // 'scalar' | 'vector'
   seed: 12345,
 };
@@ -147,29 +147,47 @@ export function runBatch(ctx, b, iterations) {
   return useCount;
 }
 
+/**
+ * 쓰일 확률의 보수적 값: n회 중 k회 쓰였을 때 95% 단측 신뢰 상한 (Clopper-Pearson).
+ * 예: 200회 중 0회 → 1.5%, 100회 중 0회 → 3.0%. 시뮬레이션 횟수가 적을수록 크게 잡힘.
+ */
+export function upperBound95(k, n) {
+  if (!n || k >= n) return 1;
+  const cdf = (p) => { // P(X ≤ k), X ~ Bin(n, p)
+    let term = Math.pow(1 - p, n), sum = term;
+    for (let i = 1; i <= k; i++) { term *= ((n - i + 1) / i) * (p / (1 - p)); sum += term; }
+    return sum;
+  };
+  let lo = k / n, hi = 1;
+  for (let it = 0; it < 60; it++) { const mid = (lo + hi) / 2; if (cdf(mid) > 0.05) lo = mid; else hi = mid; }
+  return hi;
+}
+
 /** 판정·추천 정리 */
 export function finalize(ctx, useCount, iterations) {
   const { s, warnings, gems, byFam, domCount, safe, placement, usedNow, multNow, delta } = ctx;
   const results = gems.map((g, i) => {
     const famCores = byFam[g.family].cores.length;
     const pUse = iterations ? useCount[i] / iterations : 0;
+    // 화면에는 이 보수적 값을 씀. 분해 안전 젬은 시뮬레이션에서 빼므로(더 나은 젬이 칸 수 이상 → 증명상 0) 상한도 0
+    const pHigh = safe[i] ? 0 : upperBound95(useCount[i], iterations);
     let category, reason;
     if (g.locked) { category = '잠금'; reason = '사용자가 잠금 (판정 제외)'; }
     else if (!famCores) { category = '보류'; reason = `${g.family} 코어가 없어 판정 불가`; }
     else if (safe[i]) { category = '분해 안전'; reason = `의지력·포인트·효과 모두 같거나 나은 젬 ${domCount[i]}개 보유 (한도 ${famCores * SLOTS_PER_CORE})`; }
     else if (usedNow[i]) { category = '유지'; reason = `현재 최적 배치에 사용 (빼면 전투력 -${delta[i].toFixed(3)}%)`; }
-    else if (pUse < s.useThreshold) { category = '분해 권장'; reason = `미래 젬 ${s.N}개 시뮬레이션 ${iterations}회 중 사용 ${(pUse * 100).toFixed(1)}%`; }
-    else { category = '보류'; reason = `미래에 쓰일 확률 ${(pUse * 100).toFixed(1)}%`; }
+    else if (pHigh < s.useThreshold) { category = '분해 권장'; reason = `미래 젬 ${s.N}개를 더 깎는 경우 ${iterations}번 중 ${useCount[i]}번 쓰임 → 쓰일 확률 최대 ${(pHigh * 100).toFixed(1)}%`; }
+    else { category = '보류'; reason = `미래 젬 ${s.N}개를 더 깎는 경우 ${iterations}번 중 ${useCount[i]}번 쓰임 → 쓰일 확률 최대 ${(pHigh * 100).toFixed(1)}%`; }
     return { index: i, id: g.id, label: gemLabel(g), family: g.family, type: g.type, will: g.will, willEff: g.willEff,
-      points: g.points, effects: g.effects, dominators: domCount[i], usedNow: usedNow[i], delta: delta[i], pUse, category, reason };
+      points: g.points, effects: g.effects, dominators: domCount[i], usedNow: usedNow[i], delta: delta[i], pUse, pHigh, uses: useCount[i], category, reason };
   });
 
   // 추천: 분해 안전(지배 많은 순) → 분해 권장(P_use 낮은 순) → 보류(P_use 낮은 순)까지 k개
   const byCat = (c) => results.filter((r) => r.category === c);
   const ordered = [
     ...byCat('분해 안전').sort((a, b) => b.dominators - a.dominators),
-    ...byCat('분해 권장').sort((a, b) => a.pUse - b.pUse || b.dominators - a.dominators),
-    ...byCat('보류').filter((r) => byFam[r.family].cores.length).sort((a, b) => a.pUse - b.pUse || b.dominators - a.dominators),
+    ...byCat('분해 권장').sort((a, b) => a.pHigh - b.pHigh || b.dominators - a.dominators),
+    ...byCat('보류').filter((r) => byFam[r.family].cores.length).sort((a, b) => a.pHigh - b.pHigh || b.dominators - a.dominators),
   ];
   const recommend = ordered.slice(0, s.k).map((r) => r.index);
   const warn = warnings.slice();

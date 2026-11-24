@@ -31,8 +31,8 @@
         <h3>사용 방법</h3>
         <ol>
           <li><b>코어 설정</b>에서 장착한 코어 6개를 고릅니다.</li>
-          <li><b>보유 젬</b>의 <b>게임 화면에서 젬 읽기</b>로 젬 탭을 읽어 넣습니다. 직접 입력·CSV로 넣을 수도 있습니다.</li>
-          <li><b>계산</b>을 누르면 사용 확률이 낮은 젬부터 보여 줍니다. 젬 하나를 고치고 다시 계산하면 바뀐 부분만 따로 표시됩니다.</li>
+          <li><b>보유 젬</b>의 <b>게임 화면에서 젬 읽기</b>로 젬 탭을 읽고 <b>확인</b>으로 반영합니다. 새로 깎은 젬은 <b>보유 젬 목록</b>을 펼쳐 <b>젬 추가</b>로 넣고, 다른 프리셋에서 쓰는 젬은 <b>잠금</b>을 겁니다.</li>
+          <li><b>계산</b>을 눌러야 분석합니다. 사용 확률이 낮은 젬부터 보여 줍니다. 젬 하나를 고치고 다시 계산하면 바뀐 부분만 따로 표시됩니다.</li>
         </ol>
       </div>
     </div>
@@ -40,31 +40,21 @@
 
   <section class="step" id="cores-sec">
     <div class="step-head"><h2>1. 코어 설정</h2><p class="step-sub" id="cores-sum"></p></div>
-    <form class="card char" id="char-form" autocomplete="off">
-      <label class="ctl-label" for="char-name">캐릭터 불러오기</label>
-      <input class="tin" id="char-name" maxlength="12" placeholder="캐릭터 이름" spellcheck="false">
-      <button class="btn primary" id="char-go" type="submit">불러오기</button>
-      <button class="btn" id="char-gems" type="button" hidden>장착 젬도 넣기</button>
-      <p class="char-msg" id="char-msg" aria-live="polite">코어 6개와 무기 코어 값을 공식 API에서 채웁니다. 장착하지 않은 젬은 API로 받을 수 없어 아래에서 화면 인식으로 넣습니다.</p>
-    </form>
     <div class="cores" id="cores"></div>
     <div class="card weapon" id="weapon" hidden>
-      <div class="weapon-head"><h3>무기 코어 계산용 캐릭터 값</h3><p>혼돈 별 코어가 '무기'일 때만 필요합니다. 위의 캐릭터 불러오기로 자동으로 채울 수 있습니다. 직접 고쳐도 됩니다.</p></div>
+      <div class="weapon-head"><h3>무기 코어 계산용 캐릭터 값</h3><p>혼돈 별 코어가 '무기'일 때만 필요합니다. 캐릭터 불러오기로 채우거나 직접 넣으세요.</p></div>
+      <form class="char" id="char-form" autocomplete="off">
+        <label class="ctl-label" for="char-name">캐릭터 불러오기</label>
+        <input class="tin" id="char-name" maxlength="12" placeholder="캐릭터 이름" spellcheck="false">
+        <button class="btn primary" id="char-go" type="submit">불러오기</button>
+        <p class="char-msg" id="char-msg" aria-live="polite">캐릭터 이름을 넣으면 아래 다섯 값을 공식 API(전투정보실)에서 채웁니다. 장비가 바뀌었다면 다시 불러오세요.</p>
+      </form>
       <div class="weapon-grid" id="weapon-grid"></div>
     </div>
   </section>
 
   <section class="step" id="gems-sec">
     <div class="step-head"><h2>2. 보유 젬 <span class="count num" id="gem-count"></span></h2><p class="step-sub" id="gems-sum"></p></div>
-    <div class="toolbar">
-      <button class="btn" id="add-gem">젬 추가</button>
-      <button class="btn" id="import-btn">CSV 가져오기</button>
-      <button class="btn" id="export-btn">CSV 복사</button>
-      <button class="btn" id="example-btn">예시 불러오기</button>
-      <button class="btn danger" id="clear-btn">모두 지우기</button>
-      <span class="toolbar-gap"></span>
-      <div class="seg" id="gem-fam"><button data-f="all" aria-pressed="true">전체</button><button data-f="질서" aria-pressed="false">질서</button><button data-f="혼돈" aria-pressed="false">혼돈</button></div>
-    </div>
     <div class="card rec" id="rec-box">
       <div class="rec-top">
         <div class="rec-title"><h3>게임 화면에서 젬 읽기</h3><span class="rec-sub">화면은 이 브라우저 안에서만 처리하고 어디에도 보내지 않습니다</span></div>
@@ -80,6 +70,7 @@
         </div>
       </div>
       <p class="import-msg" id="rec-status" aria-live="polite"></p>
+      <div class="rec-view" id="rec-view" hidden><canvas id="rec-canvas"></canvas><p class="rec-view-note" id="rec-view-note"></p></div>
       <div class="rec-body" id="rec-body">
         <div class="rec-left">
           <details class="rec-guide" open>
@@ -89,7 +80,7 @@
               <li><b>쓰지 않는 아크 그리드 프리셋으로 바꿔 모든 젬을 장착 해제</b>합니다. 젬 목록에는 다른 코어에 장착된 젬이 나오지 않기 때문입니다.
                 <span class="hint">해제가 어렵다면 코어를 하나씩 선택해 목록 맨 위(장착 젬)를 보여 주세요. 그 장착 젬도 더해집니다.</span></li>
               <li><b>화면 공유 시작</b>을 누르고 게임 창(또는 화면)을 고릅니다.</li>
-              <li>질서 코어를 선택한 채 목록을 <b>맨 위부터 끝까지 천천히</b> 스크롤하고, 혼돈 코어로 바꿔 한 번 더 스크롤합니다. 오른쪽 목록이 늘어나는지 확인하세요.</li>
+              <li>질서 코어를 선택한 채 목록을 <b>맨 위부터 끝까지</b> 스크롤하고, 혼돈 코어로 바꿔 한 번 더 스크롤합니다. 휠을 한 칸씩 굴리고 화면이 멈춘 순간을 읽으므로, 오른쪽 <b>읽은 위치</b> 막대가 채워지는지 보며 내리세요. 위아래로 여러 번 오가도 중복되지 않습니다.</li>
               <li>개수가 게임의 <b>젬 보유 수량</b>(질서·혼돈)과 맞으면 <b>공유 끝내기</b> → 노란 줄을 중심으로 틀린 값을 표에서 고치고 → <b>확인</b>을 누릅니다.</li>
             </ol>
           </details>
@@ -99,40 +90,39 @@
               <dt>화면 공유가 안 됩니다</dt><dd>PC의 크롬이나 엣지에서 열어 주세요. 휴대폰이나 일부 브라우저는 화면 공유를 지원하지 않습니다. 스크린샷을 찍어 <b>캡처 파일 넣기</b>로 넣어도 됩니다.</dd>
               <dt>젬이 인식되지 않습니다</dt><dd><b>공유 화면 보기</b>로 파란 상자(기준 위치)와 초록 상자(읽은 줄)가 젬 목록에 맞는지 보세요. 어긋나면 해상도를 1920×1080, 화면을 창 모드로 바꾸고 21:9 강제 설정을 끄세요.</dd>
               <dt>노란 줄(확인 필요)이 많습니다</dt><dd>해상도가 낮으면 글자가 작아 자주 생깁니다. 1920×1080 이상을 권장합니다. 표시가 너무 많거나 적으면 <b>허용 오차</b>를 조절하세요. 값은 표에서 바로 고칠 수 있습니다.</dd>
-              <dt>개수가 모자랍니다</dt><dd>스크롤을 한 번에 많이 내리면 줄을 놓칠 수 있습니다. 마우스를 젬 위가 아닌 스크롤 막대 근처에 두고 천천히 내리세요.</dd>
+              <dt>개수가 모자랍니다</dt><dd>스크롤을 한 번에 많이 내리면 줄을 놓칩니다. 오른쪽 <b>읽은 위치</b> 막대의 빈 곳(몇 번째 줄인지 표시)으로 다시 스크롤해 보여 주면 채워집니다.</dd>
               <dt>게임 창을 보는 동안 멈추나요?</dt><dd>이 페이지가 가려져 있어도 계속 캡처합니다.</dd>
             </dl>
           </details>
-          <div class="rec-view" id="rec-view" hidden><canvas id="rec-canvas"></canvas><p class="rec-view-note" id="rec-view-note"></p></div>
         </div>
         <div class="rec-right">
           <div class="rec-right-head">
             <h3>인식한 젬</h3>
             <div class="seg" id="rec-tabs" role="group" aria-label="계열"><button data-f="질서" aria-pressed="true">질서</button><button data-f="혼돈" aria-pressed="false">혼돈</button></div>
           </div>
+          <div class="rec-cover" id="rec-cover" hidden></div>
           <p class="rec-empty" id="rec-empty">아직 인식한 젬이 없습니다. 화면 공유를 시작하거나 캡처 파일을 넣으세요.</p>
           <div class="table-wrap rec-list" hidden><table class="editor rec-review" id="rec-table"><thead></thead><tbody></tbody></table></div>
           <p class="rec-notes" id="rec-notes"></p>
           <div class="rec-foot">
             <div class="rec-total" id="rec-total"></div>
-            <div class="rec-actions"><button class="btn primary" id="rec-apply" disabled>확인 (목록에 반영하고 분석)</button><button class="btn" id="rec-reset">초기화</button></div>
+            <div class="rec-actions"><button class="btn primary" id="rec-apply" disabled>확인 (보유 젬 목록에 반영)</button><button class="btn" id="rec-reset">초기화</button></div>
           </div>
         </div>
       </div>
     </div>
-    <div class="import card" id="import-box" hidden>
-      <label for="import-text">CSV를 붙여 넣거나 파일을 고르세요. 열 순서: 타입, 필요의지력, 포인트, 효과1, Lv1, 효과2, Lv2, 잠금(O)</label>
-      <textarea id="import-text" rows="6" placeholder="안정,3,4,공격력,1,추가 피해,4,&#10;침식,4,5,보스 피해,4,공격력,1,"></textarea>
-      <div class="import-actions">
-        <input type="file" id="import-file" accept=".csv,.txt,text/csv">
-        <label class="check"><input type="checkbox" id="import-replace"> 지금 목록을 지우고 바꾸기</label>
-        <button class="btn primary" id="import-go">가져오기</button>
-        <button class="btn" id="import-cancel">닫기</button>
+    <details class="card gemlist" id="gem-list">
+      <summary><b>보유 젬 목록</b> <span class="gemlist-sub" id="gem-list-sub"></span></summary>
+      <div class="toolbar">
+        <button class="btn" id="add-gem">젬 추가</button>
+        <button class="btn" id="example-btn">예시 불러오기</button>
+        <button class="btn danger" id="clear-btn">모두 지우기</button>
+        <span class="toolbar-gap"></span>
+        <div class="seg" id="gem-fam"><button data-f="all" aria-pressed="true">전체</button><button data-f="질서" aria-pressed="false">질서</button><button data-f="혼돈" aria-pressed="false">혼돈</button></div>
       </div>
-      <p class="import-msg" id="import-msg" aria-live="polite"></p>
-    </div>
-    <div class="card table-wrap"><table class="editor" id="editor"><thead></thead><tbody></tbody></table></div>
-    <p class="empty" id="gems-empty" hidden>젬이 없습니다. <b>젬 추가</b>나 <b>CSV 가져오기</b>로 넣으세요.</p>
+      <div class="table-wrap"><table class="editor" id="editor"><thead></thead><tbody></tbody></table></div>
+      <p class="empty" id="gems-empty" hidden>젬이 없습니다. 위의 <b>게임 화면에서 젬 읽기</b>로 읽거나 <b>젬 추가</b>로 넣으세요.</p>
+    </details>
   </section>
 
   <section class="step" id="run-sec">
@@ -176,10 +166,6 @@
     <div class="step-head"><h2>현재 최적 배치</h2><p class="step-sub">지금 가진 젬으로 전투력이 가장 높은 배치입니다.</p></div>
     <div class="placement" id="placement"></div>
 
-    <div class="step-head"><h2>지금 쓰는 젬이 계속 쓰일 확률</h2><p class="step-sub">확률이 낮은 젬이 위에 있습니다. 가는 표시는 직전 계산 값입니다.</p></div>
-    <div class="card"><div class="legend" id="bar-legend"></div><div class="bars" id="bars"></div>
-      <div class="axis"><span></span><div class="axis-scale"><span style="left:0">0%</span><span style="left:25%">25%</span><span style="left:50%">50%</span><span style="left:75%">75%</span><span style="left:100%">100%</span></div><span></span></div>
-    </div>
   </section>
 </div>
 <div id="tip" hidden></div>

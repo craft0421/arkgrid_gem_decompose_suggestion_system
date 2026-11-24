@@ -3,7 +3,12 @@ import { EFFECT_LABEL } from './model.js';
 
 const CAT = { '유지': 'keep', '보류': 'hold', '분해 권장': 'rec', '분해 안전': 'safe', '잠금': 'lock' };
 const CAT_ORDER = ['분해 안전', '분해 권장', '보류', '유지', '잠금'];
+// 화면에 보이는 판정 이름 (엔진 내부 이름 → 사용자가 정한 이름, docs/TERMS.md A). 내부 이름은 바꾸지 않음
+export const CAT_LABEL = { '분해 안전': '분해 권장', '분해 권장': '분해 가능', '보류': '보류', '유지': '분해 x', '잠금': '잠금' };
+const L = (c) => CAT_LABEL[c] ?? c;
 const PAGE = 40;
+// 화면에 보이는 확률은 보수적 값(95% 상한, engine upperBound95). 예전 저장 결과에는 없어서 그때는 단순 비율
+const pv = (g) => g.pHigh ?? g.pUse;
 const pct = (x) => (x * 100).toFixed(1) + '%';
 const effStr = (eff) => Object.entries(eff).map(([k, v]) => `${EFFECT_LABEL[k] || k} ${v}`).join(' · ');
 const runLabel = (m) => `${m.grade} · ${m.N}개 · ${m.iterations}회`;
@@ -34,23 +39,23 @@ export function createResults(els, { onEdit }) {
   };
   const changed = (g) => {
     const p = prevOf(g);
-    return !p || edited.has(g.id) || p.category !== g.category || Math.abs(p.pUse - g.pUse) >= 0.005;
+    return !p || edited.has(g.id) || p.category !== g.category || Math.abs(pv(p) - pv(g)) >= 0.005;
   };
   function deltaCell(g) {
     if (!prev) return '';
     const p = prevOf(g);
     if (!p) return '<span class="delta same">새 젬</span>';
-    const d = g.pUse - p.pUse;
+    const d = pv(g) - pv(p);
     const cls = Math.abs(d) < 0.0005 ? 'same' : d > 0 ? 'up' : 'down';
     const txt = Math.abs(d) < 0.0005 ? '±0' : `${d > 0 ? '+' : '−'}${Math.abs(d * 100).toFixed(1)}%p`;
-    const mv = p.category !== g.category ? `<span class="cat-move">${p.category} → ${g.category}</span>` : '';
+    const mv = p.category !== g.category ? `<span class="cat-move">${L(p.category)} → ${L(g.category)}</span>` : '';
     return `<span class="delta ${cls}">${txt}</span>${edited.has(g.id) ? ' <span class="delta same">(수정함)</span>' : ''}${mv}`;
   }
 
   const COLS = () => [
-    { key: 'p', label: '사용 확률', get: (g) => (g.category === '잠금' ? 2 : g.pUse), fmt: (g) => (g.category === '잠금' ? '—' : `${pct(g.pUse)}<span class="pbar"><i style="width:${g.pUse * 100}%"></i></span>`), r: true, num: true },
-    ...(prev ? [{ key: 'd', label: '직전 대비', get: (g) => { const p = prevOf(g); return p ? g.pUse - p.pUse : 9; }, fmt: deltaCell }] : []),
-    { key: 'cat', label: '판정', get: (g) => CAT_ORDER.indexOf(g.category), fmt: (g) => `<span class="chip"><span class="sw ${CAT[g.category]}"></span>${g.category}</span>${cur.result.recommend.includes(g.index) ? '<span class="rec-tag">추천</span>' : ''}` },
+    { key: 'p', label: '쓰일 확률(최대)', title: '미래 시뮬레이션에서 쓰인 비율의 95% 상한. 실제로는 이보다 낮을 가능성이 큼', get: (g) => (g.category === '잠금' ? 2 : pv(g)), fmt: (g) => (g.category === '잠금' ? '—' : `${pct(pv(g))}<span class="pbar"><i style="width:${pv(g) * 100}%"></i></span>`), r: true, num: true },
+    ...(prev ? [{ key: 'd', label: '직전 대비', get: (g) => { const p = prevOf(g); return p ? pv(g) - pv(p) : 9; }, fmt: deltaCell }] : []),
+    { key: 'cat', label: '판정', get: (g) => CAT_ORDER.indexOf(g.category), fmt: (g) => `<span class="chip"><span class="sw ${CAT[g.category]}"></span>${L(g.category)}</span>${cur.result.recommend.includes(g.index) ? '<span class="rec-tag">추천</span>' : ''}` },
     { key: 'i', label: '#', get: (g) => gemNo.get(g.id) ?? 999, r: true, num: true },
     { key: 'type', label: '계열·타입', get: (g) => g.family + g.type, fmt: (g) => `${g.family} ${g.type}` },
     { key: 'will', label: '필요 의지력', get: (g) => g.will, r: true, num: true },
@@ -63,7 +68,7 @@ export function createResults(els, { onEdit }) {
   function renderChips() {
     const gs = cur.result.gems;
     els.fchips.innerHTML = CAT_ORDER.filter((c) => c !== '잠금' || gs.some((g) => g.category === '잠금')).map((c) =>
-      `<button class="fchip" data-c="${c}" aria-pressed="${view.cats.has(c)}"><span class="sw ${CAT[c]}"></span>${c}<span class="n">${gs.filter((g) => g.category === c).length}</span></button>`).join('');
+      `<button class="fchip" data-c="${c}" aria-pressed="${view.cats.has(c)}"><span class="sw ${CAT[c]}"></span>${L(c)}<span class="n">${gs.filter((g) => g.category === c).length}</span></button>`).join('');
   }
   els.fchips.addEventListener('click', (e) => {
     const b = e.target.closest('.fchip'); if (!b) return;
@@ -79,7 +84,7 @@ export function createResults(els, { onEdit }) {
     els.table.tHead.innerHTML = '<tr>' + cols.map((c) => {
       if (c.nosort) return '<th></th>';
       const on = view.sort.key === c.key;
-      return `<th class="${c.r ? 'r' : ''}" aria-sort="${on ? (view.sort.dir > 0 ? 'ascending' : 'descending') : 'none'}"><button data-k="${c.key}">${c.label}${on ? (view.sort.dir > 0 ? ' ↑' : ' ↓') : ''}</button></th>`;
+      return `<th class="${c.r ? 'r' : ''}" aria-sort="${on ? (view.sort.dir > 0 ? 'ascending' : 'descending') : 'none'}"><button data-k="${c.key}"${c.title ? ` title="${c.title}"` : ''}>${c.label}${on ? (view.sort.dir > 0 ? ' ↑' : ' ↓') : ''}</button></th>`;
     }).join('') + '</tr>';
     const col = cols.find((c) => c.key === view.sort.key);
     let rows = cur.result.gems.filter((g) => view.cats.has(g.category));
@@ -92,7 +97,7 @@ export function createResults(els, { onEdit }) {
       tr.innerHTML = cols.map((c) => `<td class="${c.r ? 'r' : ''} ${c.num ? 'num' : ''}">${c.fmt ? c.fmt(g) : c.get(g)}</td>`).join('');
       tr.addEventListener('mousemove', (e) => {
         const p = prevOf(g);
-        showTip(`<b>#${gemNo.get(g.id) ?? '?'} ${g.family} ${g.type}</b><br>필요 의지력 ${g.will} · 포인트 ${g.points}<br>${effStr(g.effects)}<br><b>${g.category}</b>${g.category === '잠금' ? '' : ` · 사용 확률 ${pct(g.pUse)}`}${p ? `<br>직전(${runLabel(prev.meta)}) ${p.category} · ${pct(p.pUse)}` : ''}`, e.clientX, e.clientY);
+        showTip(`<b>#${gemNo.get(g.id) ?? '?'} ${g.family} ${g.type}</b><br>필요 의지력 ${g.will} · 포인트 ${g.points}<br>${effStr(g.effects)}<br><b>${L(g.category)}</b>${g.category === '잠금' ? '' : ` · 쓰일 확률 최대 ${pct(pv(g))}${g.uses != null ? ` (${cur.meta.iterations}번 중 ${g.uses}번 쓰임)` : ''}`}${p ? `<br>직전(${runLabel(prev.meta)}) ${L(p.category)} · ${pct(pv(p))}` : ''}`, e.clientX, e.clientY);
       });
       tr.addEventListener('mouseleave', () => { tip.hidden = true; });
       body.appendChild(tr);
@@ -117,7 +122,7 @@ export function createResults(els, { onEdit }) {
     const added = gs.filter((g) => !prev.byId.has(g.id));
     const removed = [...prev.byId.values()].filter((p) => !curIds.has(p.id));
     const catMoves = gs.filter((g) => { const p = prevOf(g); return p && p.category !== g.category; });
-    const bigMoves = gs.filter((g) => { const p = prevOf(g); return p && p.category === g.category && Math.abs(p.pUse - g.pUse) >= 0.05; });
+    const bigMoves = gs.filter((g) => { const p = prevOf(g); return p && p.category === g.category && Math.abs(pv(p) - pv(g)) >= 0.05; });
     const items = [];
     if (edited.size) items.push(`수정한 젬 ${edited.size}개`);
     if (added.length) items.push(`추가한 젬 ${added.length}개`);
@@ -125,7 +130,7 @@ export function createResults(els, { onEdit }) {
     const settingsChanged = runLabel(prev.meta) !== runLabel(cur.meta);
     const lines = [...catMoves, ...bigMoves].slice(0, 10).map((g) => {
       const p = prevOf(g);
-      return `<li>#${gemNo.get(g.id)} ${g.family} ${g.type} (의지력 ${g.will}·P${g.points}): ${p.category === g.category ? '' : `${p.category} → ${g.category}, `}사용 확률 ${pct(p.pUse)} → ${pct(g.pUse)}</li>`;
+      return `<li>#${gemNo.get(g.id)} ${g.family} ${g.type} (의지력 ${g.will}·P${g.points}): ${p.category === g.category ? '' : `${L(p.category)} → ${L(g.category)}, `}쓰일 확률(최대) ${pct(pv(p))} → ${pct(pv(g))}</li>`;
     });
     els.diff.hidden = false;
     els.diff.innerHTML = `<h3>직전 계산 대비</h3><p>${[settingsChanged ? `조건 ${runLabel(prev.meta)} → ${runLabel(cur.meta)}` : '같은 조건', ...items].join(' · ')}. 판정이 바뀐 젬 ${catMoves.length}개, 같은 판정에서 확률이 5%p 이상 바뀐 젬 ${bigMoves.length}개.</p>` +
@@ -138,16 +143,6 @@ export function createResults(els, { onEdit }) {
       const gs = p.gems.map((i) => cur.result.gems[i]);
       return `<div class="card pcore"><div class="pcore-head"><b>${p.core}</b><span class="num">${p.points}P · ${p.corePct.toFixed(2)}%</span></div>` +
         `<div style="font-size:.78rem;color:var(--fg-3)">의지력 ${p.will}</div><ul>${gs.map((g) => `<li>#${gemNo.get(g.id)} ${g.type} · 의지력 ${g.will} · P${g.points} · ${effStr(g.effects)}</li>`).join('') || '<li>젬 없음</li>'}</ul></div>`;
-    }).join('');
-  }
-
-  function renderBars() {
-    els.legend.innerHTML = `<span><span class="sw keep"></span>${runLabel(cur.meta)} (이번)</span>` + (prev ? `<span><span class="tick-key"></span>${runLabel(prev.meta)} (직전)</span>` : '');
-    const gs = cur.result.gems.filter((g) => g.usedNow).sort((a, b) => a.pUse - b.pUse || a.index - b.index);
-    els.bars.innerHTML = gs.map((g) => {
-      const p = prevOf(g);
-      return `<div class="bar-row"><div class="bar-label"><b>#${gemNo.get(g.id)}</b> ${g.family} ${g.type} · 의지력 ${g.will} · P${g.points}</div>` +
-        `<div class="track"><div class="fill" style="width:${g.pUse * 100}%"></div>${p ? `<div class="mark" style="left:${p.pUse * 100}%"></div>` : ''}</div><div class="bar-val num">${pct(g.pUse)}</div></div>`;
     }).join('');
   }
 
@@ -165,7 +160,7 @@ export function createResults(els, { onEdit }) {
     const s = run.result.summary;
     els.sub.innerHTML = `계산 조건 <b>${runLabel(run.meta)}</b>${run.meta.seconds != null ? ` (${run.meta.seconds.toFixed(1)}초)` : ''} · 아크 그리드 전투력은 현재 최적 배치 기준 <b class="num">+${s.currentGainPct.toFixed(2)}%</b>` +
       (run.result.warnings.length ? `<br><span class="err">${run.result.warnings.join(' / ')}</span>` : '');
-    renderDiff(); renderChips(); renderTable(); renderPlacement(); renderBars();
+    renderDiff(); renderChips(); renderTable(); renderPlacement();
   }
   const resultFor = (id) => (cur ? cur.result.gems.find((g) => g.id === id) ?? null : null);
   return { show, resultFor };

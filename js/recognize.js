@@ -124,6 +124,16 @@ export function findAnchor(img, T) {
   return fine;
 }
 
+/** 직전 위치 hint {x,y} 주변 ±r px만 대조 */
+export function findAnchorNear(img, T, hint, r = 4) {
+  const x0 = hint.x - r, y0 = hint.y - r, w = T.anchorF.w + 2 * r, h = T.anchorF.h + 2 * r;
+  if (x0 < 0 || y0 < 0 || x0 + w > img.width || y0 + h > img.height) return null;
+  const G = { w, h, d: new Float32Array(w * h) };
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const [R, Gr, B] = px(img, x0 + x, y0 + y); G.d[y * w + x] = (R + Gr + B) / 3; }
+  const m = matchTemplate(G, T.anchorF);
+  return { x: m.x + x0, y: m.y + y0, score: m.score };
+}
+
 // ---- 한 줄 특징 추출 (템플릿 생성과 인식이 같은 함수를 씀) ----
 export function rowFeatures(img, ax, ay, r) {
   const top = ay + GEO.row0 + GEO.pitch * r;
@@ -253,7 +263,9 @@ export function readFrame(raw, T, opts = {}) {
   // opts.scale: 화면 일부만 잘라 넣을 때 등 배율을 직접 지정
   const scale = opts.scale ?? uiScale(raw.width, raw.height);
   const img = rescale(raw, scale);
-  const anchor = findAnchor(img, T);
+  // 직전 화면의 기준 위치 근처를 먼저 봄 (창을 옮기지 않았다면 전체 탐색을 건너뛰어 빠름)
+  let anchor = opts.hint ? findAnchorNear(img, T, opts.hint) : null;
+  if (!anchor || anchor.score > T.thr.anchor) anchor = findAnchor(img, T);
   const tol = opts.tol ?? 1;
   if (anchor.score > T.thr.anchor * tol) return { ok: false, reason: '젬 목록을 찾지 못함 (아크 그리드 → 젬 탭이 보이는지 확인)', anchor, scale };
   const rows = [];
@@ -282,73 +294,136 @@ export function prepareTemplates(raw) {
 
 // ---- 여러 장 이어 붙이기 ----
 const rowKey = (g) => `${g.type}|${g.will}|${g.points}|${g.e1}${g.l1}|${g.e2}${g.l2}|${g.equipped ? 1 : 0}`;
+const THUMB_RANGE = 475; // 손잡이 이동 범위(px): 막대 위 끝~손잡이 최저 위치 (1080 기준 실측, 손잡이 크기는 줄 수와 무관)
 
 /**
- * 같은 계열 화면들을 스크롤 위치 순으로 이어 붙임.
- * 이웃한 두 화면의 겹친 줄 수 k는 '내용이 같은 k' 후보 중에서,
- * 스크롤 손잡이 이동량이 (9−k)×(한 줄 픽셀)과 맞도록 전체를 함께 고름. 한 줄 픽셀 = 이동 범위 / (전체 줄 − 9).
- * 반환 { rows, total, gaps:[{after, missing}], consistent }
+ * 같은 스크롤 위치(손잡이 ±1px)에서 찍힌 화면들을 줄마다 다수결로 하나로 합침.
+ * 마우스를 올린 줄이 밝아지거나 스크롤 중간에 찍혀 한 장만 다르게 읽힌 줄을 걸러 냄.
+ */
+function consensus(group) {
+  const len = Math.max(...group.map((f) => f.rows.length));
+  const rows = [];
+  for (let r = 0; r < len; r++) {
+    const votes = new Map();
+    for (const f of group) {
+      const g = f.rows[r]; if (!g) continue;
+      const k = rowKey(g), v = votes.get(k) ?? { n: 0, clean: null, any: g };
+      v.n++; if (!g.warn.length && !v.clean) v.clean = g;
+      votes.set(k, v);
+    }
+    const sorted = [...votes.values()].sort((a, b) => b.n - a.n || (b.clean ? 1 : 0) - (a.clean ? 1 : 0));
+    const top = sorted[0];
+    const g = { ...(top.clean ?? top.any), warn: [...(top.clean ?? top.any).warn] };
+    if (sorted.length > 1 && sorted[1].n * 2 >= top.n && !g.warn.includes('화면마다 다르게 읽힘')) g.warn.push('화면마다 다르게 읽힘');
+    rows.push(g);
+  }
+  return rows;
+}
+
+/**
+ * 같은 계열 화면들을 '목록 안의 위치'로 이어 붙임 (화면 순서·스크롤 방향과 무관 → 위아래로 여러 번 스크롤해도 중복 없음).
+ *
+ * 목록 구조: 맨 위에 '선택한 코어'의 장착 젬 e개(0~4, 해제 버튼 있음) + 아래에 미장착 젬 U개(어느 코어를 골라도 같은 순서).
+ * 다른 코어에 장착된 젬은 목록에 안 나옴 → 코어를 바꾸면 e와 전체 길이(U+e)가 달라짐. 모든 젬을 해제한 프리셋이면 e=0.
+ * 화면의 첫 줄 위치 = (손잡이 위치 − 맨 위) / 한 줄 픽셀, 한 줄 픽셀 = 475 / (U+e − 9).
+ * U 후보마다, 화면마다 가능한 e(줄 경계에서 1.5px 안 + 맨 위 장착 줄 수가 맞는 것) 중 이미 놓인 내용과 가장 맞는 e를 골라 놓고,
+ * (겹친 칸 내용이 다른 수×3 + 못 본 칸 수)가 가장 적은 U를 고름. e는 맨 위 화면에서 본 값들로 제한(맨 위를 못 봤으면 0~4).
+ * 반환 { rows(장착 젬 묶음들 + 미장착 U줄), total, gaps:[{after, missing, from, to}], consistent, conflicts, equippedSets }
  */
 export function stitch(frames) {
-  const fs = frames.filter((f) => f.ok && f.rows.length).slice().sort((a, b) => (a.thumb ?? 0) - (b.thumb ?? 0));
-  // 같은 스크롤 위치·같은 내용 화면은 하나만
-  const uniq = [];
-  for (const f of fs) {
-    const k = f.rows.map(rowKey).join(',');
-    if (!uniq.some((u) => u.thumb === f.thumb && u.k === k)) uniq.push({ ...f, k });
+  const fs = frames.filter((f) => f.ok && f.rows.length);
+  if (!fs.length) return { rows: [], total: 0, gaps: [], consistent: true, conflicts: 0, equippedSets: 0 };
+  const withT = fs.filter((f) => f.thumb != null);
+  if (!withT.length) { // 스크롤 막대 없음 = 9줄 이하 한 화면
+    const rows = consensus(fs);
+    return { rows, total: rows.length, gaps: [], consistent: true, conflicts: 0, equippedSets: 0 };
   }
-  if (!uniq.length) return { rows: [], total: 0, gaps: [], consistent: true };
-  if (uniq.length === 1) return { rows: uniq[0].rows, total: uniq[0].rows.length, gaps: [], consistent: true };
-  const keys = uniq.map((f) => f.rows.map(rowKey));
-  // 이웃 쌍마다 가능한 겹침 k (0~8, 내용 일치)
-  const pairs = [];
-  for (let i = 1; i < uniq.length; i++) {
-    const A = keys[i - 1], B = keys[i], cands = [];
-    for (let k = 0; k <= Math.min(A.length, B.length); k++) {
-      let ok = true; for (let j = 0; j < k; j++) if (A[A.length - k + j] !== B[j]) { ok = false; break; }
-      if (ok) cands.push(k);
-    }
-    pairs.push({ dThumb: (uniq[i].thumb ?? 0) - (uniq[i - 1].thumb ?? 0), cands, lenB: B.length });
+  // 손잡이 위치(±1px)와 내용(9줄 중 7줄 이상 같음)으로 묶고 묶음마다 다수결
+  const sorted = withT.slice().sort((a, b) => a.thumb - b.thumb);
+  const groups = [];
+  const similar = (A, B) => { let n = 0; const m = Math.min(A.length, B.length); for (let j = 0; j < m; j++) if (rowKey(A[j]) === rowKey(B[j])) n++; return n >= Math.max(1, m - 2) && A.length === B.length; };
+  for (const f of sorted) {
+    const g = groups.find((x) => Math.abs(f.thumb - x.frames[0].thumb) <= 1 && similar(x.frames[0].rows, f.rows));
+    if (g) g.frames.push(f); else groups.push({ frames: [f] });
   }
-  // 전체 줄 수 N 후보마다 한 줄 픽셀 p = 이동 범위/(N−9)를 정하고, 쌍마다 이동량에 가장 맞는 겹침 k를 고름.
-  // 1차: 건너뛴 줄 없이(내용이 맞는 k만) 모든 쌍이 반 줄 이내로 맞고 합이 N인 경우 중 오차 최소.
-  // 2차(1차 실패 시): 건너뛴 줄(빈칸)을 허용하되 가장 작은 N.
-  const thumbRange = 475; // 손잡이 이동 범위(px): 막대 위 끝~손잡이 최저 위치 (1080 기준 실측)
-  const n0 = keys[0].length;
-  const tryFit = (allowGap) => {
-    let best = null;
-    for (let N = n0; N <= 200; N++) {
-      const p = N > 9 ? thumbRange / (N - 9) : Infinity;
-      let total = n0, err = 0, worst = 0; const ks = [];
-      for (const pr of pairs) {
-        let bk = null, be = Infinity;
-        for (const k of pr.cands) { const e = Math.abs(pr.dThumb - (pr.lenB - k) * p); if (e < be) { be = e; bk = k; } }
-        if (allowGap && be > p / 2) {
-          const step = Math.round(pr.dThumb / p);
-          if (step > pr.lenB) { bk = -(step - pr.lenB); be = Math.abs(pr.dThumb - step * p); }
-        }
-        ks.push(bk); err += be * be; worst = Math.max(worst, be);
-        total += pr.lenB - bk; // bk<0이면 빈칸(건너뛴 줄) 포함
+  for (const g of groups) {
+    const ts = g.frames.map((f) => f.thumb).sort((a, b) => a - b);
+    g.off = ts[ts.length >> 1] - GEO.trackTop;
+    g.rows = consensus(g.frames);
+    g.keys = g.rows.map(rowKey);
+    g.q = 0; while (g.q < g.rows.length && g.rows[g.q].equipped) g.q++; // 맨 위부터 이어지는 장착 줄 수
+  }
+  // 맨 위 화면에서 본 e 값들 (못 봤으면 0~4 모두 허용)
+  const tops = groups.filter((g) => g.off <= 1);
+  const eAllowed = tops.length ? [...new Set(tops.map((g) => g.q))] : [0, 1, 2, 3, 4];
+  const maxLen = Math.max(...groups.map((g) => g.rows.length));
+
+  const place = (U) => {
+    const cand = groups.map((g) => {
+      const out = [];
+      for (const e of eAllowed) {
+        const N = U + e; if (N <= 9 || N < g.rows.length) continue;
+        const p = THUMB_RANGE / (N - 9), start = Math.round(g.off / p), err = Math.abs(g.off - start * p);
+        if (err > Math.min(1.5, 0.3 * p) || start + g.rows.length > N) continue;
+        if (start < e ? g.q !== e - start : start === 0 && g.q > 0) continue; // 맨 위에 보이는 장착 줄 수가 맞아야 함 (아래쪽 화면은 장착 표시 오인식에 흔들리지 않게 보지 않음)
+        out.push({ e, start, mis: (err / p) ** 2 });
       }
-      if (total !== N || !(worst < p / 2)) continue;
-      const gapsN = ks.filter((k) => k < 0).length;
-      // 빈칸 허용 시: 빈칸이 적을수록, 그다음 오차(한 줄 픽셀 대비)가 작을수록 좋음
-      const score = allowGap ? gapsN * 1e6 + err / (p * p) : err;
-      if (!best || score < best.score) best = { N, err, ks, p, score };
+      return out;
+    });
+    if (cand.some((c) => !c.length)) return null;
+    const cells = new Map(); // U 안의 위치 → Map(내용 → 표 수)
+    const add = (g, c, sign = 1) => g.keys.forEach((k, j) => {
+      const u = c.start + j - c.e; if (u < 0) return; // 장착 줄은 따로
+      const m = cells.get(u) ?? new Map(); m.set(k, (m.get(k) ?? 0) + sign); cells.set(u, m);
+    });
+    const clash = (g, c) => g.keys.reduce((n, k, j) => { const u = c.start + j - c.e; if (u < 0) return n; const m = cells.get(u); if (!m) return n; const tot = [...m.values()].reduce((a, b) => a + b, 0); return n + tot - (m.get(k) ?? 0); }, 0);
+    const order = groups.map((g, i) => i).sort((a, b) => cand[a].length - cand[b].length || groups[b].frames.length - groups[a].frames.length);
+    const pick = new Array(groups.length); let mis = 0;
+    for (const i of order) {
+      let best = null;
+      for (const c of cand[i]) { const x = clash(groups[i], c) * 10 + c.mis; if (!best || x < best.x) best = { c, x }; }
+      pick[i] = best.c; mis += best.c.mis; add(groups[i], best.c);
     }
-    return best;
+    let conflicts = 0;
+    for (const m of cells.values()) { const tot = [...m.values()].reduce((a, b) => a + b, 0); conflicts += tot - Math.max(...m.values()); }
+    const uncovered = U - [...cells.keys()].filter((u) => u < U).length;
+    return { U, pick, conflicts, uncovered, score: (conflicts * 3 + uncovered) * 1000 + mis };
   };
-  let best = tryFit(false), consistent = true;
-  if (!best) best = tryFit(true);
-  if (!best) { // 스크롤 정보로 못 맞추면 내용 겹침 최대값으로
-    consistent = false;
-    best = { N: null, err: Infinity, ks: pairs.map((pr) => Math.max(...pr.cands)), p: null };
+  let best = null;
+  for (let U = Math.max(1, maxLen - 4); U <= 200; U++) { const r = place(U); if (r && (!best || r.score < best.score)) best = r; }
+  if (!best) { // 스크롤 위치로 못 맞춤 (손잡이 인식 이상): 위치 순서대로 단순히 잇고 경고
+    const rows = groups.flatMap((g) => g.rows);
+    return { rows, total: rows.length, gaps: [], consistent: false, conflicts: 0, equippedSets: 0 };
   }
-  const rows = [...uniq[0].rows], gaps = [];
-  best.ks.forEach((k, i) => {
-    const B = uniq[i + 1].rows;
-    if (k < 0) { gaps.push({ after: rows.length, missing: -k }); rows.push(...B); }
-    else rows.push(...B.slice(k));
+  // 장착 젬: 선택한 코어마다 다른 묶음 → 내용이 같은 묶음은 하나로
+  const eqSets = new Map();
+  groups.forEach((g, i) => {
+    const c = best.pick[i], n = Math.max(0, c.e - c.start);
+    if (!n || c.start !== 0) return;
+    const set = g.rows.slice(0, n), k = set.map(rowKey).sort().join(',');
+    if (!eqSets.has(k)) eqSets.set(k, set);
   });
-  return { rows, total: rows.length + gaps.reduce((s, g) => s + g.missing, 0), gaps, consistent };
+  // 미장착 U줄: 칸마다 가장 많이 읽힌 내용 (다르게 읽힌 칸은 경고)
+  const slots = new Array(best.U).fill(null);
+  groups.forEach((g, i) => g.rows.forEach((row, j) => {
+    const u = best.pick[i].start + j - best.pick[i].e; if (u < 0 || u >= best.U) return;
+    const m = slots[u] ?? (slots[u] = new Map());
+    const v = m.get(g.keys[j]) ?? { n: 0, row }; v.n += g.frames.length; if (v.row.warn.length && !row.warn.length) v.row = row; m.set(g.keys[j], v);
+  }));
+  const eRows = [...eqSets.values()].flat().map((r) => ({ ...r, warn: [...r.warn] }));
+  const rows = [...eRows], gaps = [];
+  const eShow = eAllowed.length === 1 ? eAllowed[0] : 0; // 게임 목록에서의 줄 번호 = 장착 줄 수 + U 안의 위치
+  for (let u = 0; u < best.U; u++) {
+    const m = slots[u];
+    if (!m) {
+      const last = gaps[gaps.length - 1];
+      if (last && last.to === u + eShow) { last.missing++; last.to = u + eShow + 1; } else gaps.push({ after: rows.length, missing: 1, from: u + eShow + 1, to: u + eShow + 1 });
+      continue;
+    }
+    const vs = [...m.values()].sort((a, b) => b.n - a.n);
+    const row = { ...vs[0].row, warn: [...vs[0].row.warn] };
+    if (vs.length > 1 && !row.warn.includes('화면마다 다르게 읽힘')) row.warn.push('화면마다 다르게 읽힘');
+    rows.push(row);
+  }
+  return { rows, total: best.U + eRows.length, gaps, consistent: best.conflicts === 0, conflicts: best.conflicts, equippedSets: eqSets.size };
 }

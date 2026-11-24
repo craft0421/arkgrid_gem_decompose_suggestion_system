@@ -1,12 +1,14 @@
-// 화면 인식 패널: 화면 공유(자동 캡처) 또는 캡처 파일 → 인식 → 오른쪽 목록에 실시간 표시 → 표에서 수정 → '확인'으로 반영·분석
+// 화면 인식 패널: 화면 공유(자동 캡처) 또는 캡처 파일 → 인식 → 오른쪽 목록에 실시간 표시 → 표에서 수정 → '확인'으로 보유 젬 목록에 반영
+//  - 공유 중에는 0.1초마다 캡처하고, 연속 두 장이 똑같이 읽힌(화면이 멈춘) 경우만 받아들임 → 스크롤 도중·마우스 강조 순간의 오인식을 거름
+//  - 줄은 '목록 안 위치'로 합치므로 위아래로 여러 번 스크롤해도 중복되지 않음 (recognize.js stitch)
 //  - 공유 중에는 목록이 계속 갱신되므로 읽기 전용, 공유를 끝내면 수정 가능
 //  - 브라우저 탭이 가려져(게임 창을 보는 중) 타이머가 느려지는 것을 피하려고 캡처 주기는 Worker 타이머로 줌
 import { stitch } from './recognize.js';
 import { GEM_TYPES, newId } from './model.js';
+const EFF = { 공격력: '공격력', 추가피해: '추피', 보스피해: '보피', 아군피해강화: '아피강', 아군공격강화: '아공강', 낙인력: '낙인력' };
 import { createEditor } from './editor.js';
 
-const CAPTURE_MS = 350;
-const TOP_THUMB = 59; // 스크롤 손잡이가 맨 위일 때 위치 (1080 기준, 원점 기준)
+const CAPTURE_MS = 100;
 const rowKey = (g) => `${g.type}|${g.will}|${g.points}|${g.e1}${g.l1}|${g.e2}${g.l2}|${g.equipped ? 1 : 0}`;
 
 export function createCapture(els, { onApply }) {
@@ -21,6 +23,7 @@ export function createCapture(els, { onApply }) {
   let tab = '질서';
   let edited = false;    // 인식 뒤 사용자가 표에서 고쳤는지
   let sum = null;
+  let pendingKey = null; // 직전 캡처의 인식 내용 (같아야 받아들임)
 
   // ---- 인식 Worker ----
   function ensureWorker() {
@@ -44,28 +47,19 @@ export function createCapture(els, { onApply }) {
     if (!fr.rows.length) return false;
     if (fr.scale < 0.95) lowRes = true;
     const key = `${fr.family}|${fr.thumb}|${fr.rows.map(rowKey).join(',')}`;
-    if (frames.some((f) => f.key === key)) return false;
+    // 같은 화면은 여러 장 쌓아 다수결에 쓰되, 너무 많이 쌓이지 않게 같은 화면은 3장까지
+    if (frames.filter((f) => f.key === key).length >= 3) return false;
+    const isNew = !frames.some((f) => f.key === key);
     frames.push({ ...fr, key });
-    return true;
+    return isNew;
   }
 
-  // ---- 이어 붙이기 (계열별). 맨 위 화면이 장착 구성만 다른 여러 종류면, 첫 종류로 잇고 나머지에서 장착 젬만 더함 ----
+  // ---- 이어 붙이기 (계열별). 코어마다 다른 맨 위 장착 젬 처리는 stitch가 함 ----
   function summarize() {
     const out = {};
     for (const fam of ['질서', '혼돈']) {
       const fs = frames.filter((f) => f.family === fam);
-      if (!fs.length) continue;
-      const tops = fs.filter((f) => f.thumb != null && f.thumb <= TOP_THUMB + 1);
-      const eqKey = (f) => f.rows.filter((g) => g.equipped).map(rowKey).join(',');
-      const mainKey = tops.length ? eqKey(tops[0]) : null;
-      const main = fs.filter((f) => !(tops.includes(f) && eqKey(f) !== mainKey));
-      const seen = new Set(), extra = [];
-      for (const f of tops.filter((f) => eqKey(f) !== mainKey)) {
-        const k = eqKey(f); if (seen.has(k)) continue; seen.add(k);
-        extra.push(...f.rows.filter((g) => g.equipped));
-      }
-      const s = stitch(main);
-      out[fam] = { ...s, rows: [...s.rows, ...extra], extraEquipped: extra.length, frames: fs.length };
+      if (fs.length) out[fam] = { ...stitch(fs), frames: fs.length };
     }
     return out;
   }
@@ -87,7 +81,7 @@ export function createCapture(els, { onApply }) {
   const editor = createEditor({
     table: els.table, getGems: () => review, setGems: (g) => { review = g; },
     onChange: () => { edited = true; renderCounts(); },
-    resultFor: () => null, famFilter: () => tab, resetFam: () => {},
+    famFilter: () => tab, resetFam: () => {},
   });
   const famOf = (g) => GEM_TYPES[g.type]?.family;
   function renderCounts() {
@@ -104,14 +98,24 @@ export function createCapture(els, { onApply }) {
     if (warns) notes.push(`<span class="err">확인이 필요한 줄 ${warns}개</span>(노란 줄) — 틀린 값은 표에서 고치세요`);
     if (sum) for (const f of ['질서', '혼돈']) {
       const s = sum[f]; if (!s) continue;
-      if (s.extraEquipped) notes.push(`${f}: 다른 코어 장착 젬 ${s.extraEquipped}개 포함`);
-      if (s.gaps.length) notes.push(`<span class="err">${f}: 스크롤을 너무 많이 내려 ${s.gaps.reduce((a, g) => a + g.missing, 0)}줄을 놓쳤습니다 — 그 부분을 다시 보여 주세요</span>`);
-      if (!s.consistent) notes.push(`<span class="err">${f}: 화면 순서를 확실히 맞추지 못했습니다 — 개수를 게임 보유 수량과 비교하세요</span>`);
+      if (s.equippedSets) notes.push(`${f}: 코어에 장착된 젬 포함 (맨 위에서 본 코어 ${s.equippedSets}개). 다른 코어에 장착된 젬은 그 코어를 골라 맨 위를 보여 줘야 들어갑니다`);
+      if (s.gaps.length) notes.push(`<span class="err">${f}: 못 읽은 줄 ${s.gaps.reduce((a, g) => a + g.missing, 0)}개 (${s.gaps.map((g) => (g.from === g.to ? `${g.from}` : `${g.from}~${g.to}`)).join(', ')}번째) — 그 위치로 스크롤해 잠깐 멈추면 채워집니다</span>`);
+      if (!s.consistent) notes.push(`<span class="err">${f}: 같은 위치가 화면마다 다르게 읽힌 곳이 있습니다 — 노란 줄을 확인하세요</span>`);
     }
     els.notes.innerHTML = notes.join('<br>');
+    renderCover();
     els.apply.disabled = !review.length || !!stream;
     els.empty.hidden = review.length > 0;
     els.table.closest('.rec-list').hidden = review.length === 0;
+  }
+  // 읽은 위치 막대: 현재 탭 계열의 목록 전체 중 읽은 곳(초록)과 빈 곳(빨강)
+  function renderCover() {
+    const s = sum?.[tab];
+    if (!s || !s.total) { els.cover.hidden = true; return; }
+    els.cover.hidden = false;
+    const segs = s.gaps.map((g) => `<i class="gap" style="left:${((g.from - 1) / s.total) * 100}%;width:${(g.missing / s.total) * 100}%" title="${g.from}~${g.to}번째 줄 못 읽음"></i>`).join('');
+    const got = s.total - s.gaps.reduce((a, g) => a + g.missing, 0);
+    els.cover.innerHTML = `<div class="cover-head"><span>읽은 위치 · ${tab}</span><span class="num">${got} / ${s.total}줄${s.gaps.length ? '' : ' · 빈 곳 없음'}</span></div><div class="cover-bar">${segs}</div>`;
   }
   function renderList() {
     els.table.closest('.rec-list').classList.toggle('readonly', !!stream);
@@ -145,7 +149,7 @@ export function createCapture(els, { onApply }) {
   function drawView() {
     if (els.view.hidden) return;
     if (!lastFrame || !cap.width) { els.viewNote.textContent = '아직 캡처한 화면이 없습니다. 화면 공유를 시작하세요.'; return; }
-    const cv = els.canvas, w = Math.max(240, Math.min(els.view.clientWidth || 480, 900));
+    const cv = els.canvas, w = Math.max(240, els.view.clientWidth || 960);
     cv.width = w; cv.height = Math.round(w * cap.height / cap.width);
     const ctx = cv.getContext('2d');
     ctx.drawImage(cap, 0, 0, cv.width, cv.height);
@@ -158,14 +162,23 @@ export function createCapture(els, { onApply }) {
     ctx.lineWidth = 2;
     ctx.strokeStyle = '#2a78d6';
     ctx.strokeRect(ax * s, ay * s, 428 * s, 32 * s);
+    const label = (g) => `${g.will}/${g.points} ${EFF[g.e1] ?? g.e1} ${g.l1} · ${EFF[g.e2] ?? g.e2} ${g.l2}${g.type ? ` · ${g.type}` : ''}${g.equipped ? ' · 장착' : ''}`;
+    const fs = Math.max(10, Math.round(13 * s * 1.6));
+    ctx.font = `600 ${fs}px system-ui, sans-serif`; ctx.textBaseline = 'middle';
     fr.rows.forEach((g, r) => {
-      ctx.strokeStyle = g.warn.length ? '#e0a100' : '#1b9e5a';
-      ctx.strokeRect((ax - 4) * s, (ay + 56 + 63 * r - 9) * s, 404 * s, 56 * s);
+      const col = g.warn.length ? '#e0a100' : '#1b9e5a';
+      const x = (ax - 4) * s, y = (ay + 56 + 63 * r - 9) * s, bw = 404 * s, bh = 56 * s;
+      ctx.strokeStyle = col; ctx.strokeRect(x, y, bw, bh);
+      // 읽은 값을 줄 왼쪽에 표시 (게임 화면과 바로 비교)
+      const t = label(g), tw = ctx.measureText(t).width + 10, tx = Math.max(2, x - tw - 6);
+      ctx.fillStyle = 'rgba(0,0,0,.72)'; ctx.fillRect(tx, y + bh / 2 - fs * 0.75, tw, fs * 1.5);
+      ctx.fillStyle = col === '#1b9e5a' ? '#7ee2a8' : '#ffd166'; ctx.fillText(t, tx + 5, y + bh / 2);
     });
     els.viewNote.textContent = `${fr.family ?? ''} 목록 ${fr.rows.length}줄 읽음 · 파란 상자 = 기준 위치, 초록 = 읽음, 노랑 = 확인 필요. 상자가 젬 줄과 어긋나면 해상도·창 모드를 확인하세요.`;
   }
   els.viewBtn.addEventListener('click', () => {
     els.view.hidden = !els.view.hidden;
+    els.viewBtn.textContent = els.view.hidden ? '공유 화면 보기' : '공유 화면 끄기';
     els.viewBtn.setAttribute('aria-pressed', String(!els.view.hidden));
     drawView();
   });
@@ -181,7 +194,7 @@ export function createCapture(els, { onApply }) {
     }
     restartArmed = false;
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 5 }, audio: false });
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 15 }, audio: false });
     } catch (err) {
       stream = null;
       setStatus(err.name === 'NotAllowedError' ? '화면 공유를 취소했습니다.' : `<span class="err">화면 공유 실패: ${err.message}</span>`); return;
@@ -191,7 +204,7 @@ export function createCapture(els, { onApply }) {
     stream.getVideoTracks()[0].addEventListener('ended', stopShare);
     els.start.hidden = true; els.stop.hidden = false;
     renderList();
-    setStatus('공유 중 — 게임에서 젬 목록을 맨 위부터 천천히 끝까지 스크롤하세요. 질서와 혼돈을 모두 보여 주세요.');
+    setStatus('공유 중 — 게임에서 젬 목록을 맨 위부터 끝까지 스크롤하세요(휠 한 칸씩). 질서와 혼돈을 모두 보여 주세요.');
     // 가려진 탭에서도 느려지지 않는 Worker 타이머로 캡처 주기를 줌
     const src = `setInterval(() => postMessage(0), ${CAPTURE_MS});`;
     ticker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
@@ -205,11 +218,15 @@ export function createCapture(els, { onApply }) {
     if (!stream) return;
     if (!res.ok) { setStatus(`<span class="err">인식 오류: ${res.message}</span>`); return; }
     lastFrame = res.frame;
-    if (addFrame(res.frame)) rebuild();
+    const fr = res.frame;
+    const key = fr.ok ? `${fr.family}|${fr.thumb}|${fr.rows.map(rowKey).join(',')}` : null;
+    if (key && key === pendingKey) { if (addFrame(fr)) rebuild(); } // 화면이 멈춘 것을 두 번 확인한 뒤에만
+    pendingKey = key;
     drawView();
     setStatus(`공유 중 — 스크롤하며 질서·혼돈 목록을 끝까지 보여 주세요. 끝나면 <b>공유 끝내기</b>${extraStatus()}`);
   }
   function stopShare() {
+    pendingKey = null;
     ticker?.terminate(); ticker = null;
     stream?.getTracks().forEach((t) => t.stop()); stream = null; video = null;
     els.start.hidden = false; els.stop.hidden = true;
@@ -238,7 +255,7 @@ export function createCapture(els, { onApply }) {
     if (!review.length || stream) return;
     onApply(review.map(({ check, ...g }) => g));
     edited = false;
-    setStatus(`젬 ${review.length}개를 보유 젬 목록에 반영하고 분석을 시작했습니다.`);
+    setStatus(`젬 ${review.length}개를 보유 젬 목록에 반영했습니다. 아래 <b>3. 계산</b>에서 계산을 누르세요.`);
   });
   els.reset.addEventListener('click', () => {
     if (els.reset.dataset.armed !== '1') {
@@ -247,7 +264,7 @@ export function createCapture(els, { onApply }) {
       return;
     }
     els.reset.dataset.armed = ''; els.reset.textContent = '초기화';
-    frames = []; rejected = 0; lowRes = false; review = []; edited = false; lastFrame = null; sum = null;
+    frames = []; pendingKey = null; rejected = 0; lowRes = false; review = []; edited = false; lastFrame = null; sum = null;
     renderList(); drawView();
     setStatus('인식 결과를 지웠습니다.');
   });

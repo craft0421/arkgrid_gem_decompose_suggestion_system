@@ -1,23 +1,19 @@
 // 보유 젬 편집 표. 줄 단위로 바로 고치고, 잘못된 값은 그 줄에 표시한다.
-import { GEM_TYPES, TYPE_NAMES, EFFECT_LABEL, validateGem, blankGem } from './model.js';
+import { GEM_TYPES, TYPE_NAMES, EFFECT_LABEL, validateGem } from './model.js';
 
-const CAT = { '유지': 'keep', '보류': 'hold', '분해 권장': 'rec', '분해 안전': 'safe', '잠금': 'lock' };
-const pct = (x) => (x * 100).toFixed(1) + '%';
 
 /**
- * opts: { tbody, thead, getGems(), setGems(gems), onChange(), resultFor(id) → {pUse, category}|null, famFilter() }
+ * opts: { table, getGems(), setGems(gems), onChange(), famFilter(), resetFam(), reveal()? }
  */
 export function createEditor(opts) {
   const { table } = opts;
-  table.tHead.innerHTML = '<tr><th class="r">#</th><th>계열</th><th>타입</th><th class="r">필요 의지력</th><th class="r">포인트</th><th>효과 1</th><th>Lv</th><th>효과 2</th><th>Lv</th><th>잠금</th><th>마지막 결과</th><th></th></tr>';
+  table.tHead.innerHTML = '<tr><th class="r">#</th><th>계열</th><th>타입</th><th class="r">필요 의지력</th><th class="r">포인트</th><th>효과 1</th><th>Lv</th><th>효과 2</th><th>Lv</th><th title="다른 프리셋에서 쓰는 젬 등: 판정에서 빼고 절대 분해 추천 안 함">잠금</th><th>확인</th><th></th></tr>';
 
   function effectOptions(type, selected) {
     return GEM_TYPES[type].pool.map((e) => `<option value="${e}"${e === selected ? ' selected' : ''}>${EFFECT_LABEL[e]}</option>`).join('');
   }
   function rowHtml(g, idx) {
     const t = GEM_TYPES[g.type];
-    const r = opts.resultFor(g.id);
-    const res = r ? `<span class="chip"><span class="sw ${CAT[r.category]}"></span>${r.category}</span> <span class="num" style="color:var(--fg-3)">${r.category === '잠금' ? '' : pct(r.pUse)}</span>` : '<span style="color:var(--fg-3)">—</span>';
     const errs = validateGem(g);
     return `<td class="r num">${idx + 1}</td>` +
       `<td><span class="fam-tag">${t ? t.family : ''}</span></td>` +
@@ -29,8 +25,8 @@ export function createEditor(opts) {
       `<td><select class="cell-in" data-f="e2" aria-label="효과 2">${effectOptions(g.type, g.e2)}</select></td>` +
       `<td><input class="cell-in lv" data-f="l2" type="number" min="1" max="5" value="${g.l2 ?? ''}" aria-label="효과 2 레벨"></td>` +
       `<td><input type="checkbox" data-f="locked"${g.locked ? ' checked' : ''} aria-label="잠금 (다른 프리셋용)"></td>` +
-      `<td>${res}${errs.length ? `<span class="row-err">${errs.join(' · ')}</span>` : ''}${g.check ? ` <span class="chk-tag" title="값을 고치면 사라집니다">인식 확인: ${g.check}</span>` : ''}</td>` +
-      `<td><button class="btn small" data-act="dup" title="같은 젬 하나 더">복제</button> <button class="btn small danger" data-act="del">삭제</button></td>`;
+      `<td>${errs.length ? `<span class="row-err">${errs.join(' · ')}</span>` : ''}${g.check ? ` <span class="chk-tag" title="값을 고치면 사라집니다">인식 확인: ${g.check}</span>` : ''}</td>` +
+      `<td><button class="btn small danger" data-act="del" title="잘못 들어간 줄 지우기">삭제</button></td>`;
   }
 
   function render() {
@@ -85,7 +81,6 @@ export function createEditor(opts) {
     const gems = opts.getGems();
     const i = gems.findIndex((x) => x.id === tr.dataset.id);
     if (b.dataset.act === 'del') gems.splice(i, 1);
-    else if (b.dataset.act === 'dup') gems.splice(i + 1, 0, { ...gems[i], id: blankGem().id });
     opts.setGems(gems);
     render();
     opts.onChange();
@@ -93,6 +88,7 @@ export function createEditor(opts) {
 
   /** 젬 줄로 이동해서 강조 (결과 표의 '수정' 버튼에서 사용) */
   function focusGem(id) {
+    opts.reveal?.();
     let tr = table.querySelector(`tr[data-id="${id}"]`);
     if (!tr && opts.famFilter() !== 'all') { opts.resetFam(); render(); tr = table.querySelector(`tr[data-id="${id}"]`); }
     if (!tr) return;

@@ -2,7 +2,7 @@
 import { evaluateInBrowser } from '../../engine/browser/run.js';
 import {
   GEM_TYPES, CHAOS_CORES, CORE_GRADES, defaultCores, defaultWeapon, blankGem, fromEngineGem,
-  validateGem, toEngineInput, gemsToCsv, csvToGems,
+  validateGem, toEngineInput,
 } from './model.js';
 import { createEditor } from './editor.js';
 import { createResults } from './results.js';
@@ -20,7 +20,8 @@ const state = {
   cores: saved?.cores ?? defaultCores(),
   weapon: saved?.weapon ?? defaultWeapon(),
   gems: saved?.gems ?? [],
-  settings: { N: 30, k: 10, iterations: 200, seed: 12345, role: '딜러', ...(saved?.settings ?? {}) },
+  // 기본값: 당장 깎을 젬 5개, 비울 칸 5개. 예전 기본값(30/10)으로 저장된 설정은 한 번 새 기본값으로 바꿈(v:2)
+  settings: { iterations: 200, seed: 12345, role: '딜러', ...(saved?.settings ?? {}), ...(saved?.settings?.v === 2 ? {} : { N: 5, k: 5 }), v: 2 },
   grade: saved?.grade ?? '영웅',
   famFilter: 'all',
   last: saved?.last ?? null,   // { result, meta, sig:[[id,서명]...], key }
@@ -77,58 +78,37 @@ $('weapon-grid').addEventListener('change', (e) => {
   if (Number.isFinite(v) && v >= 0) { state.weapon[k] = v; changed(); } else e.target.value = state.weapon[k];
 });
 
-// ---- 1-1. 캐릭터 불러오기 (서버 /api/character → 공식 API 대리 호출) ----
-let charGems = [];
+// ---- 1-1. 캐릭터 불러오기: 무기 코어 값만 (혼돈 별 = 무기일 때만 보임). 서버 /api/character → 공식 API 대리 호출 ----
 $('char-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const name = $('char-name').value.trim(), msg = $('char-msg');
   if (!name) { msg.textContent = '캐릭터 이름을 넣어 주세요.'; return; }
-  $('char-go').disabled = true; $('char-gems').hidden = true;
+  $('char-go').disabled = true;
   msg.textContent = '불러오는 중… (서버가 잠들어 있었다면 처음 한 번은 30초쯤 걸릴 수 있습니다)';
   try {
     const res = await fetch('api/character', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
     let data = null; try { data = await res.json(); } catch {}
     if (!res.ok) throw new Error(data?.error || (res.status === 404 || res.status === 405 ? '이 주소에서는 캐릭터 불러오기를 쓸 수 없습니다.' : `오류 ${res.status}`));
-    const filled = [];
-    state.cores = state.cores.map((c) => {
-      const m = data.cores.find((x) => x.family === c.family && x.slot === c.slot);
-      if (!m) return { ...c, enabled: false };
-      const name = c.family === '혼돈' ? (CHAOS_CORES[c.slot].includes(m.name) ? m.name : c.name) : m.name;
-      filled.push(`${c.family} ${c.slot}`);
-      return { ...c, name, grade: CORE_GRADES.includes(m.grade) ? m.grade : c.grade, enabled: true };
-    });
-    if (data.weapon) state.weapon = { F: data.weapon.F, pPct: data.weapon.pPct, c: data.weapon.c, baseAtk: data.weapon.baseAtk, basePct: data.weapon.basePct };
-    renderCores(); renderWeapon(); changed();
-    charGems = data.gems.map((g) => fromEngineGem(g));
-    $('char-gems').hidden = !charGems.length;
-    $('char-gems').textContent = `장착 젬 ${charGems.length}개도 넣기`;
+    if (!data.weapon) throw new Error(`무기 코어 값을 읽지 못했습니다 (${data.weaponError || '알 수 없음'}). 직접 넣어 주세요.`);
+    state.weapon = { F: data.weapon.F, pPct: data.weapon.pPct, c: data.weapon.c, baseAtk: data.weapon.baseAtk, basePct: data.weapon.basePct };
+    renderWeapon(); changed();
     const p = data.profile;
     msg.innerHTML = '';
-    const b = document.createElement('b'); b.textContent = `${p.name} (${p.server} · ${p.className}${p.arkPassive ? ' ' + p.arkPassive : ''}${p.combatPower ? ` · 전투력 ${p.combatPower.toLocaleString()}` : ''})`;
-    msg.append(b, ` — 코어 ${filled.length}개${data.weapon ? '와 무기 코어 값' : ''}을 채웠습니다.`);
-    if (!data.weapon) msg.append(` 무기 코어 값은 못 읽었습니다(${data.weaponError || '알 수 없음'}). 직접 넣어 주세요.`);
-    if (data.role === '서폿') msg.append(' 서포터로 보입니다. 지금은 딜러 계수로만 계산합니다.');
-    msg.append(' 장착 젬은 화면 인식(모든 젬 장착 해제 후)으로 읽었다면 넣지 마세요. 두 번 들어갑니다.');
-    toast(`${p.name} 캐릭터 정보를 불러왔습니다`);
+    const b = document.createElement('b'); b.textContent = `${p.name} (${p.server} · ${p.className})`;
+    msg.append(b, ' 값을 채웠습니다.');
+    if (!data.cores.some((c) => c.family === '혼돈' && c.slot === '별' && c.name === '무기')) msg.append(' 참고: 이 캐릭터는 지금 혼돈 별에 무기 코어를 끼고 있지 않습니다.');
+    toast('무기 코어 값을 불러왔습니다');
   } catch (err) {
     msg.textContent = `불러오지 못했습니다: ${err.message}`;
   } finally {
     $('char-go').disabled = false;
   }
 });
-$('char-gems').addEventListener('click', () => {
-  if (!charGems.length) return;
-  state.gems.push(...charGems.map((g) => ({ ...g, id: blankGem().id })));
-  state.example = false;
-  editor.render(); changed();
-  toast(`장착 젬 ${charGems.length}개를 보유 젬에 더했습니다`);
-  charGems = []; $('char-gems').hidden = true;
-});
 
 // ---- 2. 젬 ----
 const results = createResults({
   table: $('tbl'), fchips: $('fchips'), onlyChanged: $('only-changed'), more: $('more'), diff: $('diff'),
-  placement: $('placement'), bars: $('bars'), legend: $('bar-legend'), sub: $('result-sub'), tip: $('tip'),
+  placement: $('placement'), sub: $('result-sub'), tip: $('tip'),
 }, { onEdit: (id) => editor.focusGem(id) });
 
 const editor = createEditor({
@@ -136,7 +116,7 @@ const editor = createEditor({
   getGems: () => state.gems,
   setGems: (g) => { state.gems = g; },
   onChange: () => changed(),
-  resultFor: (id) => (state.last && !isStale() ? results.resultFor(id) : null),
+  reveal: () => { $('gem-list').open = true; },
   famFilter: () => state.famFilter,
   resetFam: () => { state.famFilter = 'all'; renderGemFam(); },
 });
@@ -151,12 +131,14 @@ function renderGemSummary() {
   $('gems-sum').innerHTML = `질서 ${fam('질서')} · 혼돈 ${fam('혼돈')} · 잠금 ${state.gems.filter((g) => g.locked).length}` +
     (bad ? ` · <span class="err">입력 오류 ${bad}줄</span>` : '') + (state.example ? ' · <b>예시 데이터</b>(장착 24개는 실제, 나머지 76개는 가상)' : '') + (n > 100 ? ' · <span class="err">젬 탭 한도 100개 초과</span>' : '');
   $('gems-empty').hidden = n > 0;
+  $('gem-list-sub').textContent = n ? `${n}개 · 펼쳐서 고치거나, 새로 깎은 젬을 젬 추가로 넣으세요` : '비어 있음';
 }
 
 $('add-gem').addEventListener('click', () => {
   const last = state.gems[state.gems.length - 1];
   const g = blankGem(last?.type ?? '안정');
   state.gems.push(g);
+  $('gem-list').open = true;
   editor.render(); changed();
   editor.focusGem(g.id);
 });
@@ -184,28 +166,6 @@ $('example-btn').addEventListener('click', async () => {
   try { await loadExample(); renderCores(); editor.render(); changed(); toast('예시 젬 100개를 불러왔습니다'); }
   catch (e) { toast(`예시를 불러오지 못했습니다: ${e.message}`); }
 });
-$('export-btn').addEventListener('click', async () => {
-  const csv = gemsToCsv(state.gems);
-  try { await navigator.clipboard.writeText(csv); toast(`젬 ${state.gems.length}개를 CSV로 복사했습니다`); }
-  catch (e) {
-    $('import-box').hidden = false; $('import-text').value = csv; $('import-text').select();
-    $('import-msg').textContent = '클립보드에 직접 쓸 수 없어 아래 칸에 넣었습니다. 선택된 내용을 복사하세요.';
-  }
-});
-$('import-btn').addEventListener('click', () => { $('import-box').hidden = false; $('import-msg').textContent = ''; $('import-text').focus(); });
-$('import-cancel').addEventListener('click', () => { $('import-box').hidden = true; });
-$('import-file').addEventListener('change', async (e) => {
-  const f = e.target.files[0]; if (!f) return;
-  $('import-text').value = await f.text();
-});
-$('import-go').addEventListener('click', () => {
-  const { gems, errors } = csvToGems($('import-text').value);
-  if (!gems.length && !errors.length) { $('import-msg').textContent = '가져올 줄이 없습니다.'; return; }
-  if ($('import-replace').checked) { state.gems = gems; state.example = false; } else state.gems.push(...gems);
-  editor.render(); changed();
-  $('import-msg').textContent = `${gems.length}개를 가져왔습니다.` + (errors.length ? `\n건너뛴 줄 ${errors.length}개:\n` + errors.slice(0, 8).map((x) => `${x.line}번째 줄: ${x.msg}`).join('\n') : '');
-});
-
 // ---- 화면 인식 ----
 $('rec-collapse').addEventListener('click', () => {
   const body = $('rec-body'), open = body.hidden;
@@ -216,16 +176,16 @@ $('rec-collapse').addEventListener('click', () => {
 createCapture({
   start: $('rec-start'), stop: $('rec-stop'), files: $('rec-files'), status: $('rec-status'), tol: $('rec-tol'),
   viewBtn: $('rec-view-btn'), view: $('rec-view'), canvas: $('rec-canvas'), viewNote: $('rec-view-note'),
-  tabs: $('rec-tabs'), table: $('rec-table'), empty: $('rec-empty'), notes: $('rec-notes'), total: $('rec-total'),
+  tabs: $('rec-tabs'), cover: $('rec-cover'), table: $('rec-table'), empty: $('rec-empty'), notes: $('rec-notes'), total: $('rec-total'),
   apply: $('rec-apply'), reset: $('rec-reset'),
 }, {
-  // '확인'을 눌러야 들어옴: 보유 젬 목록을 인식 결과로 바꾸고 바로 분석
+  // '확인'을 눌러야 들어옴: 보유 젬 목록을 인식 결과로 바꿈 (계산은 3. 계산의 버튼으로만)
   onApply: (gems) => {
     state.gems = gems.map((g) => ({ ...g, id: g.id || blankGem().id }));
     state.example = false;
+    $('gem-list').open = false;
     editor.render(); changed();
-    toast(`화면 인식 젬 ${gems.length}개를 반영했습니다. 분석을 시작합니다`);
-    run();
+    toast(`젬 ${gems.length}개를 보유 젬 목록에 반영했습니다. 아래 계산을 누르세요`);
   },
 });
 
