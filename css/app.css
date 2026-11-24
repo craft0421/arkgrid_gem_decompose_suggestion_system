@@ -1,4 +1,6 @@
 /* 레이아웃: 위에서 아래로 단계 1(코어) → 2(젬 편집) → 3(계산) → 결과. 데모 페이지와 같은 토큰 */
+/* hidden 속성은 어떤 display 지정보다 우선 (예전에는 .weapon·.rec-view의 display: grid가 이겨서 숨겨지지 않았음) */
+[hidden] { display: none !important; }
 :root {
   --bg: #f6f7f9; --surface: #ffffff; --line: #e3e5ea; --grid: #eef0f3;
   --fg: #16181d; --fg-2: #4d525c; --fg-3: #7b808a; --accent: #2a78d6; --accent-fg: #ffffff;
@@ -37,6 +39,8 @@ h2 { font-size: 1.15rem; font-weight: 600; margin: 0; text-wrap: balance; }
 h3 { font-size: 0.95rem; font-weight: 600; margin: 0; }
 p { margin: 0; }
 header { display: grid; gap: 8px; }
+.head-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+#theme-btn { flex: none; }
 .lede { color: var(--fg-2); max-width: 66ch; }
 .num { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
@@ -191,10 +195,9 @@ tr.chk td { background: var(--warn-bg); }
 .rec-title { display: grid; gap: 2px; }
 .rec-sub { font-size: 0.8rem; color: var(--fg-3); }
 .rec-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.rec-body { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 16px; align-items: start; }
-.rec-body[hidden] { display: none; }
-@media (max-width: 900px) { .rec-body { grid-template-columns: minmax(0, 1fr); } }
+.rec-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; } /* 위: 사용 방법·잘 안 될 때, 아래: 인식한 젬(전체 폭) */
 .rec-left, .rec-right { display: grid; gap: 10px; min-width: 0; }
+@media (min-width: 900px) { .rec-left { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; } }
 .rec-left details { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
 .rec-left summary { cursor: pointer; font-weight: 600; }
 .rec-left ol { margin: 8px 0 0; padding-left: 1.2em; display: grid; gap: 6px; font-size: 0.88rem; color: var(--fg-2); }

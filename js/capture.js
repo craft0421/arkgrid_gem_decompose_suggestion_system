@@ -1,4 +1,4 @@
-// 화면 인식 패널: 화면 공유(자동 캡처) 또는 캡처 파일 → 인식 → 오른쪽 목록에 실시간 표시 → 표에서 수정 → '확인'으로 보유 젬 목록에 반영
+// 화면 인식 패널: 화면 공유(자동 캡처) 또는 캡처 파일 → 인식 → 아래 목록에 실시간 표시 → 표에서 수정 → '확인'으로 보유 젬 목록에 반영
 //  - 공유 중에는 0.1초마다 캡처하고, 연속 두 장이 똑같이 읽힌(화면이 멈춘) 경우만 받아들임 → 스크롤 도중·마우스 강조 순간의 오인식을 거름
 //  - 줄은 '목록 안 위치'로 합치므로 위아래로 여러 번 스크롤해도 중복되지 않음 (recognize.js stitch)
 //  - 공유 중에는 목록이 계속 갱신되므로 읽기 전용, 공유를 끝내면 수정 가능
@@ -19,7 +19,7 @@ export function createCapture(els, { onApply }) {
   const cap = document.createElement('canvas');
   const capCtx = cap.getContext('2d', { willReadFrequently: true });
   let lastFrame = null;  // 공유 화면 보기용 (마지막 인식 결과)
-  let review = [];       // 오른쪽 목록 (편집기 젬)
+  let review = [];       // 인식한 젬 목록 (편집기 젬)
   let tab = '질서';
   let edited = false;    // 인식 뒤 사용자가 표에서 고쳤는지
   let sum = null;
@@ -77,7 +77,7 @@ export function createCapture(els, { onApply }) {
     return { id: newId(), type, will: g.will, points: g.points, e1, l1: g.l1, e2, l2: g.l2, locked: false, check: check.length ? check.join(', ') : null };
   }
 
-  // ---- 오른쪽 목록 (표에서 바로 수정) ----
+  // ---- 인식한 젬 목록 (표에서 바로 수정) ----
   const editor = createEditor({
     table: els.table, getGems: () => review, setGems: (g) => { review = g; },
     onChange: () => { edited = true; renderCounts(); },

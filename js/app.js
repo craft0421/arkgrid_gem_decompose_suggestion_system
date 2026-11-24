@@ -38,6 +38,21 @@ function toast(msg) {
 
 // ---- 안내 접기 기억 ----
 const notice = $('notice');
+// ---- 테마 (자동 = 기기 설정 따름 / 밝게 / 어둡게). 색은 css의 :root 토큰과 [data-theme]으로 바뀜 ----
+const THEMES = [['auto', '자동'], ['light', '밝게'], ['dark', '어둡게']];
+const themeBtn = $('theme-btn');
+const applyTheme = (t) => {
+  if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  themeBtn.textContent = `테마: ${THEMES.find(([k]) => k === t)[1]}`;
+};
+let theme = 'auto';
+try { const t = localStorage.getItem(KEY + '-theme'); if (t === 'light' || t === 'dark') theme = t; } catch (e) {}
+applyTheme(theme);
+themeBtn.addEventListener('click', () => {
+  theme = THEMES[(THEMES.findIndex(([k]) => k === theme) + 1) % THEMES.length][0];
+  applyTheme(theme);
+  try { if (theme === 'auto') localStorage.removeItem(KEY + '-theme'); else localStorage.setItem(KEY + '-theme', theme); } catch (e) {}
+});
 try { if (localStorage.getItem(KEY + '-notice') === '0') notice.open = false; } catch (e) {}
 notice.addEventListener('toggle', () => { try { localStorage.setItem(KEY + '-notice', notice.open ? '1' : '0'); } catch (e) {} });
 
@@ -78,11 +93,16 @@ $('weapon-grid').addEventListener('change', (e) => {
   if (Number.isFinite(v) && v >= 0) { state.weapon[k] = v; changed(); } else e.target.value = state.weapon[k];
 });
 
+let charCooldown = 0;
 // ---- 1-1. 캐릭터 불러오기: 무기 코어 값만 (혼돈 별 = 무기일 때만 보임). 서버 /api/character → 공식 API 대리 호출 ----
 $('char-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const name = $('char-name').value.trim(), msg = $('char-msg');
+  // 혼돈 별 = 무기 코어가 아니면 호출하지 않음 (공식 API 한도 분당 100회 보호. 서버도 IP당 분당 10회·전체 90회로 막음)
+  if (!state.cores.some((c) => c.enabled && c.family === '혼돈' && c.name === '무기')) { msg.textContent = '혼돈 별 코어를 무기로 고른 경우에만 불러올 수 있습니다.'; return; }
   if (!name) { msg.textContent = '캐릭터 이름을 넣어 주세요.'; return; }
+  if (Date.now() < charCooldown) { msg.textContent = '잠시 뒤에 다시 눌러 주세요.'; return; }
+  charCooldown = Date.now() + 5000; // 연타 방지: 5초에 한 번
   $('char-go').disabled = true;
   msg.textContent = '불러오는 중… (서버가 잠들어 있었다면 처음 한 번은 30초쯤 걸릴 수 있습니다)';
   try {
