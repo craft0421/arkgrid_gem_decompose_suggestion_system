@@ -1,0 +1,12 @@
+# Render 설정: 사이트 + 캐릭터 불러오기 서버 (Node 웹 서비스). docs/DEPLOY.md
+services:
+  - type: web
+    runtime: node
+    name: arkgrid-gem-helper
+    plan: free
+    buildCommand: echo no build
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: LOSTARK_API_KEY
+        sync: false
